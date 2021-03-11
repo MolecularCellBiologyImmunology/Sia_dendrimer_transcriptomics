@@ -1,0 +1,309 @@
+---
+Sialic acid samples only for GLM model
+
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+####Server Directory
+Some of these locations may be helpful:
+
+Script to run STAR:
+ STAR_pipeline.sh
+
+Slack page:
+  https://bioinf-vumc.slack.com
+
+
+####The following R packages were used in this project:
+
+Rsubread: Package contains featureCounts for quantification
+
+biomaRt: changing ensembl ids to entrez gene ids
+
+edgeR: working with count data (normalization, library size correction, glm)
+
+made4: Specialized heatamps for expression data
+
+```{r Packages, include=FALSE}
+source("https://bioconductor.org/biocLite.R")
+biocLite("Rsubread")
+library(Rsubread)
+
+biocLite("edgeR")
+library("edgeR")
+
+biocLite("biomaRt")
+library("biomaRt")
+
+biocLite("made4")
+library("made4")
+
+```
+###STAR Mapping Statistics
+To get the % mapping in STAR, I had to read in the STAR final log files and extract the information before I could make the percent mapping plot.
+```{r, echo=FALSE}
+path="~/Desktop/Ensembl_build/STAR/STARrun1/Output"
+setwd(path)
+file.names<-dir(path, pattern = "Log.final.out")
+d<-data.frame(matrix(nrow=66,ncol=9))
+
+#read files, gather data in matrix
+for (i in 1:length(file.names)){
+ureads<-read.table(file.names[i], sep="|", fill=TRUE, row.names=1,strip.white = TRUE, stringsAsFactors = FALSE)
+
+uniq_percent<-ureads["Uniquely mapped reads %",1]
+uniq_percent=unlist(strsplit(uniq_percent, split="%"))
+
+multi_loci<-ureads["% of reads mapped to multiple loci",1]
+multi_loci=unlist(strsplit(multi_loci, split="%"))
+
+too_many_loci<-ureads["% of reads mapped to too many loci",1]
+too_many_loci=unlist(strsplit(too_many_loci, split="%"))
+
+mismatch<-ureads["% of reads unmapped: too many mismatches",1]
+mismatch=unlist(strsplit(mismatch, split="%"))
+
+short<-ureads["% of reads unmapped: too short",1]
+short=unlist(strsplit(short, split="%"))
+
+other<-ureads["% of reads unmapped: other",1]
+other=unlist(strsplit(other, split="%"))
+
+d[i,1]<-file.names[i]
+d[i,2]<-as.numeric(uniq_percent)
+d[i,3]<-as.numeric(multi_loci)
+d[i,4]<-as.numeric(too_many_loci)
+d[i,5]<-as.numeric(mismatch)
+d[i,6]<-as.numeric(short)
+d[i,7]<-as.numeric(other)
+}
+
+#renaming columns, adding multimapping total and nonmapping total categories
+names<-c("sample","unique mapped","multimap","multimap too many","mismatches","short","other","total multimap","not mapping")
+colnames(d)<-names
+d[,8]<-d$multimap + d$`multimap too many`
+d[,9]<-d$mismatches + d$short + d$other
+#save(d,file="/home/a.gallagher/Desktop/Ensembl_build/STAR/STARrun1/Graphs/STAR percent aligned table.rda")
+
+
+#barplot of uniquely mapped, >1 mapped and non-mapping
+barplot(as.matrix(t(d[,c(2,8,9)])), names.arg = rownames(d), col=c("blue","green","red"), xlab = "sample number", ylab="percent", cex.names = 0.8, main="Star Percent Mapping")
+legend(55, 25, c("Uniquely mapped", "Mapped to multiple loci", "Non-mapping"), fill=c("blue","green","red" ,txt.font=1), cex=0.8)
+
+```
+
+###Quantification with featureCounts
+```{r, eval=FALSE, include=FALSE}
+path="/home/a.gallagher/Desktop/Ensembl_build/STAR/STARrun1/Output/"
+setwd(path)
+file.names<-dir(path, pattern = ".sam")
+percent_assigned<-data.frame(66,2)
+
+#runs featureCounts but also saves statistics from each sample in a taple of the percent assigned reads
+for (i in 1:length(file.names)){
+  a<-featureCounts(file.names[i],annot.inbuilt=NULL, annot.ext= "/home/a.gallagher/Desktop/ensembl38human.gtf",
+                   #"/net/nfs/PAT/data/ref/iGenomes/Homo_sapiens/NCBI/GRCh38/Annotation/Genes/genes.gtf",
+                 isGTFAnnotationFile=TRUE,
+                 GTF.featureType="exon",
+                 GTF.attrType="gene_id",strandSpecific = 3 )
+  b<-a$stat
+  pa<-b[1,2]/sum(b[,2])*100
+  percent_assigned[i,1]<-file.names[i]
+  percent_assigned[i,2]<-pa
+  
+}
+
+mean(percent_assigned[1:66,2])
+sd(percent_assigned[1:66,2])
+
+#save(a,"~/Desktop/Ensembl_build/STAR/STARrun1/Counts/noMM.rda")
+```
+
+
+
+####Loading the data
+Count data was loaded into R.
+
+1) Sample information including info such as LPS, treatment, coating and donor were put into a dataframe. The galactose coated samples were renamed galactose.coated.
+
+2) The columns were rearranged to match the experiment setup. The files were named as strings so when they were run in featureCounts they were for the most part in order but with a few exceptions. For example for samples were run 2,20,21,22 etc and 3,30,31,etc. so I just rearranged them manually. Another alternative would have been to rename the first 9 samples 01,02,03 etc.
+
+3) I also shorted the column names because featureCounts used the filename that was run as the column name.
+
+4) Used biomaRt to convert ensembl idś to gene ids
+
+5) Some ensembl transcripts didn't have equivalent genes ids. In that case clone based ids were used. If there was not a clone id then the transcript kept its original ensembl id.
+
+6) Sometimes transcripts mapped to the same gene. In that case the counts in the rows were summed.
+
+```{r, include=FALSE}
+
+
+
+load("~/../../net/nfs/PAT/analysis/MPS-263/a.gallagher/Desktop/Ensembl_build/STAR/STARrun1/Counts/noMM.rda")
+#resorted columnsto match sample information table
+counts<-a$counts
+df <- subset(counts, select=c(3,14,26,37,49,60,64:66,1:2,4:13,15:25,27:36,38:48,50:59,61:63))
+col_names<-colnames(df)
+
+#shortened column names which were the sam file names
+col_names<-gsub("[(Alignedoutsam)]","", x=col_names)
+col_names<-gsub("[(X)]","", x=col_names)
+colnames(df)<-col_names
+
+#getting gene symbols from ensembl idś
+#ensembl = useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl", GRCh=38) 
+#ids<-getBM(attributes=c('ensembl_gene_id','hgnc_symbol','hgnc_id',"clone_based_ensembl_gene"),filters = 'ensembl_gene_id', values = rownames(counts), mart = ensembl)
+#save(ids, file="~/Desktop/Ensembl_build/STAR/STARrun1/Counts/gene_ids.rda")
+load("~/../../net/nfs/PAT/analysis/MPS-263/a.gallagher/Desktop/Ensembl_build/STAR/STARrun1/Counts/gene_ids.rda")
+#this merges columns in the ids matrix. In the count dataframe genes missing an HGNC symbol will instead have an ensembl clone id and if there is no clone id than the ensembl id will be used.
+ids$hgnc_symbol <- ifelse(ids$hgnc_symbol== "", ids$clone_based_ensembl_gene, ids$hgnc_symbol)
+ids$hgnc_symbol <- ifelse(ids$hgnc_symbol== "", ids$ensembl_gene_id, ids$hgnc_symbol)
+m <- match(rownames(df), ids$ensembl_gene_id)
+df<-data.frame(df)
+df$gene_symbol <- ids[m, "hgnc_symbol"]
+
+#sums rows that have duplicates in terms of gene symbol (2 different ensembl are equivalent to the same gene)
+df<-aggregate(.~gene_symbol,data=df,FUN=sum)
+rownames(df)<-df$gene_symbol
+df<-df[,-1]
+
+
+# To write output to a table
+write.table(df, "~/../../net/nfs/PAT/analysis/MPS-263/RNAseq/JL_analysis/counts_not_normalized.txt", sep="\t",row.names=TRUE,col.names = TRUE, quote=FALSE)
+
+```
+
+####Normalization with edgeR
+
+The rows (genes) with 0 counts for all treatments were removed. Library size adjustment and normalization occurs. Genes were filtered, genes with less than 1 cpm in more than 63 samples were removed. Library size and normalization are recaluclted after filtering.
+```{r, echo=FALSE}
+d<-DGEList(counts=df, lib.size = colSums(df),remove.zeros = TRUE, group=sample_info$treatment)
+keep<-rowSums(cpm(d)>2)>=3
+table(keep)
+d<-d[keep, ,keep.lib.sizes=FALSE]
+d<-calcNormFactors(d)
+
+####selecting Sialic acid and opengalactose control samples
+# to make a table with the Sialic acid samples and opengalactose control
+whdata <- which(sample_info$treatment == "Gal"|sample_info$treatment == "2,3-sialic acid"|sample_info$treatment == "2,6-sialic acid"|sample_info$treatment =="unstim")
+
+# selecting the row and collums belonging to the specific groups
+dcomp <- d[,whdata]
+dcomp$samples
+
+
+#filtering out all the remaining data which has less than 0.0000 counts within the samples and write to a new table
+nzero <- apply(dcomp$counts, 1, function(rij) length(rij[rij==0]))
+wh <- which(nzero >4)
+inputData <- dcomp[-wh,]
+dim(inputData)
+
+
+```
+
+
+####MDS plots
+```{r, echo=FALSE}
+
+#label by donor and LPS
+plotMDS(inputData,pch=rep(c(16,17)), col=rep(c("blue","red","green")), main="MDS plot of entire dataset")
+legend(-1,-0.25, c("Donor 1", "Donor 2", "Donor 3", "No LPS","LPS"), pt.bg=c("blue","red","green","black","black"), pch = c(15,15,15,16,17), col = c("blue","red","green","black","black"))
+
+# MDS plot for all Siglec binders labeled by treatment and LPS/no LPS
+plotMDS(inputData,pch=rep(c(16,17)), col=c(rep("blue",6),rep("gray",6),rep("green",6), rep("yellow",6)), main="MDS plot of Siglec binders")
+legend("top", c("unstim","open Galactose", "A2,3 sialic acid", "A2,6 sialic acid", "No LPS", "LPS"), pt.bg=c("blue","gray","green","yellow", "black", "black"), pch=rep(c(16,17)), col=c("blue","gray","green","yellow", "black", "black"))
+
+
+
+```
+
+####Generalized linear model (GLM)
+1) LPS, donor and treatment are made into factors and then were releveled so that galactose and no LPS were the baseline. A design matrix was created.
+
+2) Dispersions are calculated.
+
+3) The model is fit.
+
+```{r, echo=FALSE}
+
+# Only sialic acid + opengalactose samples for sample information
+
+sample_info_sia <- sample_info[c(19:30,55:66),]
+
+
+
+#setting up the design matrix
+LPS <- relevel(factor(sample_info_sia$X),ref = "no")
+Donor <- factor(sample_info_sia$donor)
+Treatment <- relevel(factor(sample_info_sia$treatment),ref ="Gal")
+design <- model.matrix(~0+Donor+Treatment+LPS+Donor:Treatment+LPS:Treatment+Donor:LPS)
+
+#estimating dispersion
+s<-estimateDisp(inputData,design, robust=TRUE)
+plotBCV(s)
+s$common.dispersion
+#model fit
+fit<-glmFit(s,design)
+sum(fit$deviance)
+#coefficients 
+glf<-glmLRT(fit,coef=4)
+```
+
+topTags
+Used to perform likelihood ratio tests. Calculates logFC, Pvalue and FDR.
+```{r, echo=FALSE}
+#topTags calculates pvalue,FDR,logFC
+ntest<-length(rownames(s$counts))
+geneStats<-topTags(glf, n=ntest)
+geneNames<-rownames(geneStats$table[geneStats$table$FDR<0.05,])
+# adds ranking 1/pvalue with sign of logFC
+geneStats$table$rank<-(1/geneStats$table$PValue)*ifelse(geneStats$table$logFC<0,-1,1)
+
+
+
+# To write output to a table
+write.table(geneStats$table, "~/../../net/nfs/PAT/analysis/MPS-263/RNAseq/JL_analysis/sia only/unstim LPS sia only.txt", sep="\t",row.names=TRUE,col.names = TRUE, quote=FALSE)
+
+#To write normalized (fitted)values to a table for all samples
+write.table(glf$fitted.values,"~/../../net/nfs/PAT/analysis/MPS-263/RNAseq/JL_analysis/sia only/norm_count_sia_only", sep="\t", row.names=TRUE, col.names=TRUE, quote=FALSE)
+
+hist(x=geneStats$table$PValue, col="blue", breaks=seq(0,1,0.01), main="Histogram of p vlaues: unstim LPS vs open galactose LPS", xlab="Pvalue")
+
+
+```
+
+Make a volcano plot
+
+```{r, echo=FALSE}
+#Volcano plot P-value
+plot(-log10(geneStats$table$PValue)~geneStats$table$logFC, pch=20, xlab="log2(fold change)", ylab = "-log10(P Value)", main="Volcano plot: A2,3 sialic acid + LPS vs open galactose + LPS ")
+abline(h=-log10(0.05), col="red",lty=2)
+abline(h=-log10(0.01), col="blue",lty=2)
+legend("topright", c("P value=0.01","P value=0.05"), lty=2, col=c("blue","red"))
+
+#Volcano plotFDR
+plot(-log10(geneStats$table$FDR)~geneStats$table$logFC, pch=20, xlab="log2(fold change)", ylab = "-log10(FDR)", main="Volcano plot: A2,3 sialic acid vs open galactose")
+abline(h=-log10(0.05), col="red",lty=2)
+abline(h=-log10(0.01), col="blue",lty=2)
+legend("topright", c("FDR=0.01","FDR=0.05"), lty=2, col=c("blue","red"))
+
+#Volcano plotFDR
+plot(-log10(geneStats$table$FDR)~geneStats$table$logFC, pch=20, xlab="log2(fold change)", ylab = "-log10(FDR)", main="Volcano plot: A2,3 sialic acid vs open galactose")
+abline(h=-log10(0.05), col="blue",lty=2)
+abline(v=0, col="black",lty=2)
+legend("topright","FDR=0.05", lty=1, col="blue")
+
+
+#use to select a point and get a geneid
+#identify(x=geneStats$table$logFC,y=-log10(geneStats$table$PValue), labels = rownames(geneStats$table))
+```
+
